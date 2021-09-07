@@ -1,0 +1,44 @@
+#Parameters
+SUBSCRIPTION_NAME=dev_subscription
+SUBSCRIPTION_ID=291bba3f-e0a5-47bc-a099-3bdcb2a50a05
+TENANT_ID=31c75423-32d6-4322-88b7-c478bdde4858
+RG_NAME=dev-rg
+KEY_VAULT_NAME=infra-pipeline-kv
+STORAGE_GROUP_NAME=devazuresa
+LOCATION=australiaeast
+
+# Login
+az login
+az account set --subscription="${SUBSCRIPTION_ID}"
+
+# Create Resource Group
+az group create --name ${RG_NAME} --location ${LOCATION}
+
+# Create DevOps Project
+az devops project create --name azure-infra --org https://dev.azure.com/yourdevops-org --source-control git --visibility private
+
+# Create Store Account and Storage Container for tfstate & tflock
+az storage account create \
+  --name <account-name> \
+  --resource-group storage-resource-group \
+  --location australiaeast \
+  --sku Standard_LRS \
+  --kind StorageV2
+
+az storage container create \
+  --account-name "${STORAGE_ACCOUNT}" \
+  --name tfstate
+
+# Create Service Account & Client Secret
+TF_SP=$(az ad sp create-for-rbac --role="Contributor" --scopes="/subscriptions/${SUBSCRIPTION_ID}")
+# Client ID of the service principal
+TF_CLIENT_ID=$(echo $TF_SP | jq '.appId' | sed 's/"//g')
+# Client secret of the service principal
+TF_CLIENT_SECRET=$(echo $TF_SP | jq '.password' | sed 's/"//g')
+
+# Create Key Vault & Populate Credentials for Pipeline Use
+az keyvault create --name ${KEY_VAULT_NAME} --resource-group ${RG_NAME} --location ${LOCATION}
+az keyvault secret set --vault-name ${KEY_VAULT_NAME} --name "tf-client-id" --value "$TF_CLIENT_ID"
+az keyvault secret set --vault-name ${KEY_VAULT_NAME} --name "tf-client-secret" --value "$TF_CLIENT_SECRET"
+az keyvault secret set --vault-name dev-pipeline-secrets-kv --name "tf-tenant-id" --value "$TENANT_ID"
+az keyvault secret set --vault-name dev-pipeline-secrets-kv --name "tf-subscription-id" --value "$SUBSCRIPTION_ID"
