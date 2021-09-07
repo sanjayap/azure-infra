@@ -1,0 +1,117 @@
+name: Infra Pipeline for Dev
+
+trigger:
+  branches:
+    include:
+      - dev
+
+variables:
+  - name: terraform_version
+    value: latest
+  - group: infra-pipeline-vg
+  - name: env
+    value: dev
+
+pr: none
+
+stages:
+  - stage: Plan
+    pool:
+      vmImage: 'ubuntu-latest'
+    jobs:
+      - job: terraform_validate
+        displayName: Terraform Validate
+        continueOnError: false
+        steps:
+          - checkout: self
+          - bash: |
+              set -euo pipefail
+              echo ${TERRAFORM_VERSION}
+              terraform --version
+              terraform init -input=false -backend=false
+              terraform validate -json
+            workingDirectory: $(ENV)
+            env:
+              ENV: $(env)
+      - job: terraform_plan
+        dependsOn: [terraform_validate]
+        displayName: Terraform Plan
+        steps:
+          - checkout: self
+          - bash: |
+              set -euo pipefail
+              echo ${TERRAFORM_VERSION}
+              terraform --version
+              az login --service-principal --username  $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+              echo $(Build.SourceVersion) > commit-id.txt
+              export COMMIT_PEFIX=$(cat commit-id.txt | cut -c 1-7) 
+              terraform init -input=false 
+              terraform plan -input=false -out ${COMMIT_PEFIX}.tfplan
+            workingDirectory: $(ENV)
+            env:
+              ARM_CLIENT_ID: $(tf-client-id)
+              ARM_CLIENT_SECRET: $(tf-client-secret)
+              ARM_SUBSCRIPTION_ID: $(tf-subscription-id)
+              ARM_TENANT_ID: $(tf-tenant-id)
+              ENV: $(env)
+          - task: ArchiveFiles@2
+            inputs:
+              rootFolderOrFile: '$(Build.SourcesDirectory)'
+              includeRootFolder: false
+              archiveType: 'tar'
+              tarCompression: 'gz'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).tgz'
+              replaceExistingArchive: true
+            displayName: 'Create Plan Artifact'
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'drop'
+              publishLocation: 'Container'
+            displayName: 'Publish Plan Artifact'   
+  - stage: Approve
+    pool: server
+    jobs:
+      - job: Approve
+        displayName: Manual Approval
+        timeoutInMinutes: 4320 # job times out in 3 days
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440 # task times out in 1 day
+            inputs:
+              notifyUsers: |
+                sanjayap@gmail.com
+              instructions: 'Please validate the build configuration and resume'
+              onTimeout: 'resume'
+  - stage: Apply
+    pool:
+      vmImage: 'ubuntu-latest'
+    jobs:
+      - job: Apply
+        displayName: Terrform Apply
+        steps:
+          - checkout: none
+          - task: DownloadBuildArtifacts@0
+            inputs:
+              artifactName: 'drop'
+            displayName: 'Download Plan Artifact'
+          - task: ExtractFiles@1
+            inputs:
+              archiveFilePatterns: '$(System.ArtifactsDirectory)/drop/$(Build.BuildId).tgz'
+              destinationFolder: '$(System.DefaultWorkingDirectory)/'
+              cleanDestinationFolder: false
+            displayName: 'Extract Plan Artifact'
+          - bash: |
+              set -euo pipefail
+              echo ${TERRAFORM_VERSION}
+              terraform --version
+              az login --service-principal --username  $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+              export COMMIT_PEFIX=$(cat commit-id.txt | cut -c 1-7)
+              terraform apply -input=false ${COMMIT_PEFIX}.tfplan
+            workingDirectory: $(ENV)
+            env:
+              ARM_CLIENT_ID: $(tf-client-id)
+              ARM_CLIENT_SECRET: $(tf-client-secret)
+              ARM_SUBSCRIPTION_ID: $(tf-subscription-id)
+              ARM_TENANT_ID: $(tf-tenant-id)
+              ENV: $(env)
